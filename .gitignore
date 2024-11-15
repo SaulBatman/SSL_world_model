@@ -1,0 +1,10 @@
+datasets
+results
+*.pyc
+__pycache__/
+flowdiffusion/tensorflow-24.03-tf2-py3.simg
+outputs
+exps/*
+data/*
+pretrained/*
+slurm_scripts
