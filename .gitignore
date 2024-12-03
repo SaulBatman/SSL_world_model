@@ -8,3 +8,5 @@ exps/*
 data/*
 pretrained/*
 slurm_scripts
+
+pretrained/MAE/*

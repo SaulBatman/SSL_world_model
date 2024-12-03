@@ -1,0 +1,15 @@
+interact -q ssrinath-gcondo -a ssrinath-gcondo -g 1 -m 64g -n 8 -t 256:00:00
+module load miniconda3/23.11.0s cuda/12.2.0-4lgnkrh git-lfs ffmpeg/7.0-xny2fb2 ninja
+source /oscar/runtime/software/external/miniconda3/23.11.0/etc/profile.d/conda.sh
+
+conda create -n ssl python=3.8
+conda activate ssl
+conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+pip install timm
+
+
+wget -nc https://dl.fbaipublicfiles.com/mae/visualize/mae_visualize_vit_base.pth
+wget -nc https://dl.fbaipublicfiles.com/mae/visualize/mae_visualize_vit_large.pth
+wget -nc https://dl.fbaipublicfiles.com/mae/visualize/mae_visualize_vit_huge.pth
+
+mv mae_visualize_vit_*.pth /pretrained/MAE
