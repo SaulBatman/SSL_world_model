@@ -1,5 +1,4 @@
 import os
-import cv2
 import h5py
 import yaml
 import json
@@ -7,50 +6,109 @@ import torch
 import random
 import numpy as np
 
+from tqdm import tqdm
 from glob import glob
 from PIL import Image
+from collections import defaultdict
 from torch.utils.data import Dataset
+from torchvision.io import read_image
+from utils.plucker_ray import plucker_embedding
 from scipy.spatial.transform import Rotation as R
 
 random.seed(0)
 
-INTRINSICS = {128: np.array([[154.50966799, 0.,  64.],
-                             [0., 154.50966799, 64.],
-                             [0. ,0., 1.]]),
-              224: np.array([[270.39191899, 0., 112.],
-                             [0., 270.39191899, 112.],
-                             [0., 0.,1.]])}
+INTRINSICS = {128: torch.tensor([[154.50966799, 0.,  64.],
+                                 [0., 154.50966799, 64.],
+                                 [0. ,0., 1.]]),
+              224: torch.tensor([[270.39191899, 0., 112.],
+                                 [0., 270.39191899, 112.],
+                                 [0., 0.,1.]])}
 
 
-def get_projs(cam_extrs, intr):
+def get_proj(cam_extrs, intr):
     """
     Calculate camera projection matrices.
     
     Params
     ------
     cam_extrs: dict {cam_name -> [x, y, z, qw, qx, qy, qz]}
-    intr: np.array [3, 3]
+    intr: tensor [3, 3]
 
     Return
     ------
-    {camera name: projection matrix}
+    projs: dict {camera name: projection matrix}
     """
     projs = {}
 
-    K = np.eye(4)
+    K = torch.eye(4)
     K[:3, :3] = intr
-    K[3, 3] = 1 
+    K[3, 3] = 1
 
     for cam_name, params in cam_extrs.items():
         x, y, z, qw, qx, qy, qz = params
-        rotation = R.from_quat([qx, qy, qz, qw]).as_matrix()
-        extr = np.eye(4)
-        extr[:3, :3] = rotation
-        extr[:3, 3] = [x, y, z]
+        rot = torch.tensor(R.from_quat([qx, qy, qz, qw]).as_matrix())
+        t = torch.tensor([x, y, z])
+        w2c = torch.eye(4)
+        w2c[:3, :3] = rot
+        w2c[:3, 3] = t
         
-        projs[cam_name] = K @ extr
+        projs[cam_name] = K @ w2c
 
     return projs
+
+
+def get_pixel_coords(img_size):
+    """
+    Generate pixel coordinates for all pixels in an image.
+
+    Params
+    ------
+    img_size: int
+
+    Return
+    ------
+    uv: tensor [N, 2]
+    """
+    h, w = img_size, img_size
+    y, x = torch.meshgrid(torch.arange(h), torch.arange(w), indexing='ij')
+    uv = torch.stack([x.flatten(), y.flatten(), torch.ones_like(x.flatten())], dim=-1)
+    return uv
+
+
+def get_plucker(cam_extrs, intr, img_size):
+    """
+    Calculate Plucker embedding.
+    
+    Params
+    ------
+    cam_extrs: dict {cam_name -> [x, y, z, qw, qx, qy, qz]}
+    intr: tensor [3, 3]
+    img_size: int
+
+    Return
+    ------
+    plucker: dict {camera name: Plucker embedding}
+    """
+    plucker = {}
+
+    K = torch.eye(4)
+    K[:3, :3] = intr
+    K[3, 3] = 1
+    uv = get_pixel_coords(img_size)
+
+    for cam_name, params in cam_extrs.items():
+        x, y, z, qw, qx, qy, qz = params
+        rot = torch.tensor(R.from_quat([qx, qy, qz, qw]).as_matrix())
+        t = torch.tensor([x, y, z])
+        w2c = torch.eye(4)
+        w2c[:3, :3] = rot
+        w2c[:3, 3] = t
+        c2w = torch.inverse(w2c)
+        
+        plucker[cam_name] = plucker_embedding(c2w, uv, K)
+
+    return plucker
+
 
 # https://github.com/real-stanford/diffusion_policy/blob/main/diffusion_policy/common/sampler.py
 def get_val_mask(n_episodes, val_ratio, seed=0):
@@ -72,20 +130,26 @@ class DatasetMultiview(Dataset):
                  cam_file='camera_pose_dict.npy',
                  task='square_d0',
                  mode='train',
+                 cam_mode='proj',
                  img_size=224,
                  seed=42,
-                 val_ratio=0.01):
+                 val_ratio=0.01,
+                 device='cuda'):
 
         self.mode = mode
         assert self.mode in ['train', 'val'], 'ERROR: mode has to be train or val'
+        assert cam_mode in ['proj', 'plucker'], 'ERROR: camera mode has to be proj or plucker'
         self.data_root = os.path.join(dataset_root, task)
+        self.device = device
 
         # load camera data
         cam_data = np.load(os.path.join(self.data_root, cam_file), allow_pickle=True).item()
         self.cam_keys = list(cam_data.keys())
-
         intrinsic = INTRINSICS[img_size]
-        self.projs = get_projs(cam_data, intrinsic)
+        if cam_mode == 'proj':
+            self.cams = get_proj(cam_data, intrinsic)
+        else:
+            self.cams = get_plucker(cam_data, intrinsic, img_size)
 
         demo_dirs = glob(os.path.join(self.data_root, 'demo_*'))
         # set certain demos to train and certain to val
@@ -117,7 +181,12 @@ class DatasetMultiview(Dataset):
 
     def __getitem__(self, idx):
         """
-
+        Return
+        ------
+        imgs: [2, c, h, w]
+        action: [x, y, z, roll, pitch, yaw, gripper]
+        cam1: proj [4, 4] or plucker [N, 6]
+        cam2: proj [4, 4] or plucker [N, 6]
         """
         # randomly sample 2 cameras
         cam1, cam2 = random.choices(self.cam_keys, k=2)
@@ -129,20 +198,18 @@ class DatasetMultiview(Dataset):
         # img2 is image at next time step (after action applied) for cam2
         img1_path = os.path.join(self.data_root, demo1, 'obs', f'{cam1}_image', f'{demo_idx1}.jpg')
         img2_path = os.path.join(self.data_root, demo2, 'obs', f'{cam2}_image', f'{demo_idx2}.jpg')
-        img1 = cv2.cvtColor(cv2.imread(img1_path), cv2.COLOR_BGR2RGB)
-        img2 = cv2.cvtColor(cv2.imread(img2_path), cv2.COLOR_BGR2RGB)
-        img1 = torch.tensor(img1).permute(2, 0, 1).float() / 255.0
-        img2 = torch.tensor(img2).permute(2, 0, 1).float() / 255.0
-        imgs = torch.stack([img1, img2])
+        img1 = read_image(img1_path).float() / 255.0
+        img2 = read_image(img2_path).float() / 255.0
+        imgs = torch.stack([img1, img2]).to(self.device)
         
         # corresponding action
-        action = torch.tensor((self.actions[demo2])[demo_idx2])
+        action = torch.tensor((self.actions[demo1])[demo_idx1])
 
-        # camera projection matrices
-        proj1 = torch.tensor(self.projs[cam1])
-        proj2 = torch.tensor(self.projs[cam2])
+        # cameras
+        cam1 = self.cams[cam1]
+        cam2 = self.cams[cam2]
 
-        return imgs, action, proj1, proj2
+        return imgs, action, cam1, cam2
 
 
 # class Datasethdf5Multiview(Dataset):
