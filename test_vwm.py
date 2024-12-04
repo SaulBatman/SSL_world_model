@@ -34,8 +34,8 @@ x = torch.einsum("nhwc->nchw", x)
 
 # run MAE
 action = torch.randn(1, 3).cuda()
-view_src = torch.randn(1, 2).cuda()
-view_tgt = torch.randn(1, 2).cuda()
+view_src = torch.randn(1, 6, 224, 224).cuda()
+view_tgt = torch.randn(1, 6, 224, 224).cuda()
 loss, y, mask = vwm(x, action, view_src, view_tgt, mask_ratio=0.75)
 y = vwm.mae.unpatchify(y)
 y = torch.einsum("nchw->nhwc", y).detach().cpu()
