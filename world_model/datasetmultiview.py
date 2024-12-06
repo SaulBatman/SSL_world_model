@@ -136,7 +136,8 @@ class DatasetMultiview(Dataset):
                  val_ratio=0.01,
                  device='cuda',
                  enable_zero_action=False,
-                 enable_inverse_action=False):
+                 enable_inverse_action=False,
+                 enable_sameview=False):
 
         self.mode = mode
         assert self.mode in ['train', 'val'], 'ERROR: mode has to be train or val'
@@ -181,6 +182,7 @@ class DatasetMultiview(Dataset):
         self.indices = indices
         self.enable_zero_action = enable_zero_action
         self.enable_inverse_action = enable_inverse_action
+        self.enable_sameview = enable_sameview
 
     def __len__(self):
         return len(self.indices) - 1
@@ -213,7 +215,7 @@ class DatasetMultiview(Dataset):
             if probability < 0.2: # zero actions
                 action[:6] = 0.
                 action[6] = self.actions[demo1][demo_idx1-1][-1] if demo_idx1-1 > 0 else -1
-                img2_path = os.path.join(self.data_root, demo2, 'obs', f'{cam1}_image', f'{demo_idx2}.jpg')
+                img2_path = os.path.join(self.data_root, demo2, 'obs', f'{cam2}_image', f'{demo_idx1}.jpg')
         
         if self.enable_inverse_action:
             probability = np.random.random()
@@ -221,7 +223,11 @@ class DatasetMultiview(Dataset):
                 action = torch.tensor((self.inverted_actions[demo1])[demo_idx2])
                 img1_path, img2_path = img2_path, img1_path
 
-       
+        if self.enable_sameview:
+            probability = np.random.random()
+            if probability < 0.2: # invert actions
+                img2_path = os.path.join(self.data_root, demo2, 'obs', f'{cam1}_image', f'{demo_idx2}.jpg')
+        
         img1 = read_image(img1_path).float() / 255.0
         img2 = read_image(img2_path).float() / 255.0
         imgs = torch.stack([img1, img2]).to(self.device)
