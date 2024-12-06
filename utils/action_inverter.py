@@ -84,7 +84,7 @@ def adding_invert_actions_to_dataset(dataset_folder_path):
             demo_path = os.path.join(dataset_folder_path, folder)
             actions = torch.from_numpy(np.load(os.path.join(demo_path, "actions.npy")))
             invert_actions = invert_trajectory_actions(actions)
-            np.save(os.path.join(demo_path, "invert_actions.npy"), invert_actions.numpy())
+            np.save(os.path.join(demo_path, "inverse_actions.npy"), invert_actions.numpy())
 
 if __name__ == '__main__':
     adding_invert_actions_to_dataset("/home/mingxi/mingxi_ws/ssl/sqaure_0")
