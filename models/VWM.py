@@ -5,6 +5,7 @@ from models.MAE import mae_vit_base_patch16, mae_vit_large_patch16, mae_vit_huge
 import copy
 from timm.models.vision_transformer import PatchEmbed
 
+
 def PE(x, L):
     pe = list()
     for i in range(L):
@@ -14,7 +15,7 @@ def PE(x, L):
 
 
 class VisualWorldModel(nn.Module):
-    def __init__(self, mae_ckpt_path, action_dim=3, view_dim=2, n_register=0):
+    def __init__(self, mae_ckpt_path, action_dim=3, n_register=0):
         super().__init__()
         mae_type = os.path.basename(mae_ckpt_path).split(".")[0].split("_")[-1]
         if mae_type == "base":
@@ -31,20 +32,24 @@ class VisualWorldModel(nn.Module):
         img_size = self.mae.img_size
         patch_size = self.mae.patch_size
         decoder_embed_dim = self.mae.decoder_embed_dim
-        self.src_ray_PE_encoder = self.init_zero_module(PatchEmbed(img_size, patch_size, 6, embed_dim))
+        self.src_ray_PE_encoder = self.init_zero_module(
+            PatchEmbed(img_size, patch_size, 6, embed_dim)
+        )
 
         self.action_encoder_proj = nn.Linear(action_dim, embed_dim)
         self.action_decoder_proj = nn.Linear(embed_dim, decoder_embed_dim)
-        self.tgt_ray_PE_decoder = self.init_zero_module(PatchEmbed(img_size, patch_size, 6, decoder_embed_dim))
+        self.tgt_ray_PE_decoder = self.init_zero_module(
+            PatchEmbed(img_size, patch_size, 6, decoder_embed_dim)
+        )
 
         self.n_register = n_register
         if n_register > 0:
-            self.encoder_register = nn.Parameter(
-                torch.zeros((n_register, embed_dim))
-            )
+            self.encoder_register = nn.Parameter(torch.zeros((n_register, embed_dim)))
             self.decoder_register = nn.Parameter(
                 torch.zeros((n_register, decoder_embed_dim))
             )
+
+        self.l2_loss = nn.MSELoss()
 
     @staticmethod
     def init_zero_module(module):
@@ -63,15 +68,20 @@ class VisualWorldModel(nn.Module):
         action: action tensor [B, dim_action] => end effector position and rotation + gripper state
         ray_img: view tensor [B, 6, H, W]
         """
+        src_img = imgs[:, 0]
+        tgt_img = imgs[:, 1]
         latent, mask, ids_restore = self.forward_encoder(
-            imgs, action, src_ray_img, mask_ratio
+            src_img, action, src_ray_img, mask_ratio
         )
         pred = self.forward_decoder(latent, ids_restore, tgt_ray_img)  # [N, L, p*p*3]
-        loss = self.forward_loss(imgs, pred, mask)
+        loss = self.forward_loss(tgt_img, pred, mask)
         return loss, pred, mask
 
     def forward_loss(self, imgs, pred, mask):
-        return 0
+        target = self.mae.patchify(imgs)
+
+        loss = (pred - target) ** 2
+        return loss.mean()
 
     def forward_decoder(self, x, ids_restore, tgt_ray_img):
         # split cls+img tokens and action, view tokens
@@ -84,13 +94,17 @@ class VisualWorldModel(nn.Module):
         plucker_embed = self.tgt_ray_PE_decoder(tgt_ray_img)
 
         # append mask tokens to sequence
-        mask_tokens = self.mae.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
+        mask_tokens = self.mae.mask_token.repeat(
+            x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1
+        )
         x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)  # no cls token
-        x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
+        x_ = torch.gather(
+            x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2])
+        )  # unshuffle
         x = torch.cat([x[:, :1, :], x_ + plucker_embed], dim=1)  # append cls token
 
         # add pos embed
-        x = x + self.mae.decoder_pos_embed 
+        x = x + self.mae.decoder_pos_embed
 
         if self.n_register > 0:
             x = torch.cat([x, action, self.decoder_register[None]], dim=1)

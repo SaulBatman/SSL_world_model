@@ -5,8 +5,7 @@ source /oscar/runtime/software/external/miniconda3/23.11.0/etc/profile.d/conda.s
 conda create -n ssl python=3.8
 conda activate ssl
 conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
-pip install timm
-
+pip install timm lightning
 
 wget -nc https://dl.fbaipublicfiles.com/mae/visualize/mae_visualize_vit_base.pth
 wget -nc https://dl.fbaipublicfiles.com/mae/visualize/mae_visualize_vit_large.pth

@@ -10,3 +10,10 @@ pretrained/*
 slurm_scripts
 
 pretrained/MAE/*
+square_d0
+square_d0.zip
+ccv_log
+wandb
+lightning_logs
+logs
+SSL_final_project

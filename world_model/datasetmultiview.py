@@ -1,7 +1,4 @@
 import os
-import h5py
-import yaml
-import json
 import torch
 import random
 import numpy as np
@@ -17,18 +14,25 @@ from scipy.spatial.transform import Rotation as R
 
 random.seed(0)
 
-INTRINSICS = {128: torch.tensor([[154.50966799, 0.,  64.],
-                                 [0., 154.50966799, 64.],
-                                 [0. ,0., 1.]]),
-              224: torch.tensor([[270.39191899, 0., 112.],
-                                 [0., 270.39191899, 112.],
-                                 [0., 0.,1.]])}
+INTRINSICS = {
+    128: torch.tensor(
+        [[154.50966799, 0.0, 64.0], [0.0, 154.50966799, 64.0], [0.0, 0.0, 1.0]]
+    ),
+    224: torch.tensor(
+        [
+            [270.39191899, 0.0, 112.0, 0.0],
+            [0.0, 270.39191899, 112.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    ),
+}
 
 
 def get_proj(cam_extrs, intr):
     """
     Calculate camera projection matrices.
-    
+
     Params
     ------
     cam_extrs: dict {cam_name -> [x, y, z, qw, qx, qy, qz]}
@@ -38,10 +42,10 @@ def get_proj(cam_extrs, intr):
     ------
     projs: dict {camera name: projection matrix}
     """
-    projs = {}
+    c2w = {}
 
     K = torch.eye(4)
-    K[:3, :3] = intr
+    K[:3, :3] = intr[:3, :3]
     K[3, 3] = 1
 
     for cam_name, params in cam_extrs.items():
@@ -51,10 +55,10 @@ def get_proj(cam_extrs, intr):
         w2c = torch.eye(4)
         w2c[:3, :3] = rot
         w2c[:3, 3] = t
-        
-        projs[cam_name] = K @ w2c
+        c2w[cam_name] = torch.inverse(w2c)
+        # projs[cam_name] = K @ w2c
 
-    return projs
+    return c2w
 
 
 def get_pixel_coords(img_size):
@@ -70,15 +74,15 @@ def get_pixel_coords(img_size):
     uv: tensor [N, 2]
     """
     h, w = img_size, img_size
-    y, x = torch.meshgrid(torch.arange(h), torch.arange(w), indexing='ij')
+    y, x = torch.meshgrid(torch.arange(h), torch.arange(w), indexing="ij")
     uv = torch.stack([x.flatten(), y.flatten(), torch.ones_like(x.flatten())], dim=-1)
     return uv
 
 
-def get_plucker(cam_extrs, intr, img_size):
+def get_plucker(cam_extrs, intr, img_size=224):
     """
     Calculate Plucker embedding.
-    
+
     Params
     ------
     cam_extrs: dict {cam_name -> [x, y, z, qw, qx, qy, qz]}
@@ -104,7 +108,7 @@ def get_plucker(cam_extrs, intr, img_size):
         w2c[:3, :3] = rot
         w2c[:3, 3] = t
         c2w = torch.inverse(w2c)
-        
+
         plucker[cam_name] = plucker_embedding(c2w, uv, K)
 
     return plucker
@@ -117,7 +121,7 @@ def get_val_mask(n_episodes, val_ratio, seed=0):
         return val_mask
 
     # have at least 1 episode for validation, and at least 1 episode for train
-    n_val = min(max(1, round(n_episodes * val_ratio)), n_episodes-1)
+    n_val = min(max(1, round(n_episodes * val_ratio)), n_episodes - 1)
     rng = np.random.default_rng(seed=seed)
     val_idxs = rng.choice(n_episodes, size=n_val, replace=False)
     val_mask[val_idxs] = True
@@ -125,52 +129,57 @@ def get_val_mask(n_episodes, val_ratio, seed=0):
 
 
 class DatasetMultiview(Dataset):
-    def __init__(self, 
-                 dataset_root='./data/', 
-                 cam_file='camera_pose_dict.npy',
-                 task='square_d0',
-                 mode='train',
-                 cam_mode='proj',
-                 img_size=224,
-                 seed=42,
-                 val_ratio=0.01,
-                 device='cuda'):
+    def __init__(
+        self,
+        dataset_root="./data/",
+        cam_file="camera_pose_dict.npy",
+        task="square_d0",
+        mode="train",
+        cam_mode="proj",
+        img_size=224,
+        seed=42,
+        val_ratio=0.01,
+        device="cuda",
+    ):
 
         self.mode = mode
-        assert self.mode in ['train', 'val'], 'ERROR: mode has to be train or val'
-        assert cam_mode in ['proj', 'plucker'], 'ERROR: camera mode has to be proj or plucker'
+        assert self.mode in ["train", "val"], "ERROR: mode has to be train or val"
+        assert cam_mode in [
+            "proj",
+            "plucker",
+        ], "ERROR: camera mode has to be proj or plucker"
         self.data_root = os.path.join(dataset_root, task)
         self.device = device
 
         # load camera data
-        cam_data = np.load(os.path.join(self.data_root, cam_file), allow_pickle=True).item()
+        cam_data = np.load(
+            os.path.join(self.data_root, cam_file), allow_pickle=True
+        ).item()
         self.cam_keys = list(cam_data.keys())
-        intrinsic = INTRINSICS[img_size]
-        if cam_mode == 'proj':
-            self.cams = get_proj(cam_data, intrinsic)
-        else:
-            self.cams = get_plucker(cam_data, intrinsic, img_size)
+        self.intrinsic = INTRINSICS[img_size]
+        self.cams = get_proj(cam_data, self.intrinsic)
 
-        demo_dirs = glob(os.path.join(self.data_root, 'demo_*'))
+        demo_dirs = glob(os.path.join(self.data_root, "demo_*"))
         # set certain demos to train and certain to val
         val_mask = get_val_mask(
-            n_episodes=len(demo_dirs), 
-            val_ratio=val_ratio,
-            seed=seed)
+            n_episodes=len(demo_dirs), val_ratio=val_ratio, seed=seed
+        )
         train_mask = ~val_mask
-        mask = train_mask if mode=='train' else val_mask
+        mask = train_mask if mode == "train" else val_mask
 
         self.actions = {}
         indices = []
         for i, demo_dir in enumerate(demo_dirs):
             if not mask[i]:
                 continue
-            
+
             demo_name = os.path.basename(demo_dir)
             # store the associated action array for the demo
-            self.actions[demo_name] = np.load(os.path.join(demo_dir, 'actions.npy'))
+            self.actions[demo_name] = np.load(os.path.join(demo_dir, "actions.npy"))
             # get all of the frames
-            num_frames = len(glob(os.path.join(demo_dir, 'obs', 'camera0_image', '*.jpg'))) # all cams have same num frames
+            num_frames = len(
+                glob(os.path.join(demo_dir, "obs", "camera0_image", "*.jpg"))
+            )  # all cams have same num frames
             for j in range(num_frames):
                 indices.append([demo_name, j])
 
@@ -192,29 +201,32 @@ class DatasetMultiview(Dataset):
         cam1, cam2 = random.choices(self.cam_keys, k=2)
 
         demo1, demo_idx1 = self.indices[idx]
-        demo2, demo_idx2 = self.indices[idx+1]
+        demo2, demo_idx2 = self.indices[idx + 1]
 
         # img1 is image at given idx for cam1
         # img2 is image at next time step (after action applied) for cam2
-        img1_path = os.path.join(self.data_root, demo1, 'obs', f'{cam1}_image', f'{demo_idx1}.jpg')
-        img2_path = os.path.join(self.data_root, demo2, 'obs', f'{cam2}_image', f'{demo_idx2}.jpg')
+        img1_path = os.path.join(
+            self.data_root, demo1, "obs", f"{cam1}_image", f"{demo_idx1}.jpg"
+        )
+        img2_path = os.path.join(
+            self.data_root, demo2, "obs", f"{cam2}_image", f"{demo_idx2}.jpg"
+        )
         img1 = read_image(img1_path).float() / 255.0
         img2 = read_image(img2_path).float() / 255.0
-        imgs = torch.stack([img1, img2]).to(self.device)
-        
+
         # corresponding action
-        action = torch.tensor((self.actions[demo1])[demo_idx1])
+        action = torch.tensor((self.actions[demo1])[demo_idx1]).float()
 
         # cameras
-        cam1 = self.cams[cam1]
-        cam2 = self.cams[cam2]
+        cam1 = self.cams[cam1].float()
+        cam2 = self.cams[cam2].float()
 
-        return imgs, action, cam1, cam2
+        return img1, img2, action, cam1, cam2
 
 
 # class Datasethdf5Multiview(Dataset):
-#     def __init__(self, 
-#                  dataset_root='./data/', 
+#     def __init__(self,
+#                  dataset_root='./data/',
 #                  cam_file='./assets/camera_pose_dict.yaml',
 #                  task='multicamera_separate_demo_v141',
 #                  img_size=128,
@@ -233,7 +245,7 @@ class DatasetMultiview(Dataset):
 #         dataset_path = os.path.join(dataset_root, f'{task}.hdf5')
 #         if not os.path.exists(dataset_path):
 #             raise FileNotFoundError(f"ERROR: {dataset_path} does not exist")
-        
+
 #         self.hdf5_file = h5py.File(dataset_path, 'r')
 #         self.demos = self.hdf5_file['data']
 
@@ -264,7 +276,7 @@ class DatasetMultiview(Dataset):
 #         img1 = np.array(self.demos[demo1]['obs'][f'{cam1}_image'])[demo_idx1].transpose(2, 0, 1) / 255.
 #         img2 = np.array(self.demos[demo2]['obs'][f'{cam2}_image'])[demo_idx2].transpose(2, 0, 1) / 255.
 #         imgs = np.array([img1, img2])
-        
+
 #         action = np.array(self.demos[demo2]['actions'])[demo_idx2]
 
 #         proj1 = self.projs[cam1]
