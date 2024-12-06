@@ -134,7 +134,9 @@ class DatasetMultiview(Dataset):
                  img_size=224,
                  seed=42,
                  val_ratio=0.01,
-                 device='cuda'):
+                 device='cuda',
+                 enable_zero_action=False,
+                 enable_inverse_action=False):
 
         self.mode = mode
         assert self.mode in ['train', 'val'], 'ERROR: mode has to be train or val'
@@ -161,6 +163,7 @@ class DatasetMultiview(Dataset):
         mask = train_mask if mode=='train' else val_mask
 
         self.actions = {}
+        self.inverted_actions = {}
         indices = []
         for i, demo_dir in enumerate(demo_dirs):
             if not mask[i]:
@@ -169,12 +172,15 @@ class DatasetMultiview(Dataset):
             demo_name = os.path.basename(demo_dir)
             # store the associated action array for the demo
             self.actions[demo_name] = np.load(os.path.join(demo_dir, 'actions.npy'))
+            self.inverted_actions[demo_name] = np.load(os.path.join(demo_dir, 'invert_actions.npy'))
             # get all of the frames
             num_frames = len(glob(os.path.join(demo_dir, 'obs', 'camera0_image', '*.jpg'))) # all cams have same num frames
             for j in range(num_frames):
                 indices.append([demo_name, j])
 
         self.indices = indices
+        self.enable_zero_action = enable_zero_action
+        self.enable_inverse_action = enable_inverse_action
 
     def __len__(self):
         return len(self.indices) - 1
@@ -198,12 +204,27 @@ class DatasetMultiview(Dataset):
         # img2 is image at next time step (after action applied) for cam2
         img1_path = os.path.join(self.data_root, demo1, 'obs', f'{cam1}_image', f'{demo_idx1}.jpg')
         img2_path = os.path.join(self.data_root, demo2, 'obs', f'{cam2}_image', f'{demo_idx2}.jpg')
-        img1 = read_image(img1_path).float() / 255.0
-        img2 = read_image(img2_path).float() / 255.0
-        imgs = torch.stack([img1, img2]).to(self.device)
         
         # corresponding action
         action = torch.tensor((self.actions[demo1])[demo_idx1])
+
+        if self.enable_zero_action:
+            probability = np.random.random()
+            if probability < 0.2: # zero actions
+                action[:6] = 0.
+                action[6] = self.actions[demo1][demo_idx1-1][-1] if demo_idx1-1 > 0 else -1
+                img2_path = os.path.join(self.data_root, demo2, 'obs', f'{cam1}_image', f'{demo_idx2}.jpg')
+        
+        if self.enable_inverse_action:
+            probability = np.random.random()
+            if probability < 0.2: # invert actions
+                action = torch.tensor((self.inverted_actions[demo1])[demo_idx2])
+                img1_path, img2_path = img2_path, img1_path
+
+       
+        img1 = read_image(img1_path).float() / 255.0
+        img2 = read_image(img2_path).float() / 255.0
+        imgs = torch.stack([img1, img2]).to(self.device)
 
         # cameras
         cam1 = self.cams[cam1]
