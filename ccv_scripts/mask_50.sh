@@ -15,4 +15,4 @@ source /oscar/runtime/software/external/miniconda3/23.11.0/etc/profile.d/conda.s
 conda activate ssl
 
 cd /users/zli419/data/users/zli419/SSL/SSL_world_model
-python train.py --bs 256 --num_workers 32 --mask_ratio 0.5 --exp_name mask_50
+python train.py --bs 256 --num_workers 32 --mask_ratio 0.5 --exp_name mask_50 --multi_view

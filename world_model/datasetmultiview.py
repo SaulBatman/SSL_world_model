@@ -2,7 +2,6 @@ import os
 import torch
 import random
 import numpy as np
-
 from tqdm import tqdm
 from glob import glob
 from PIL import Image
@@ -140,6 +139,7 @@ class DatasetMultiview(Dataset):
         seed=42,
         val_ratio=0.01,
         device="cuda",
+        enable_multi_view=True,
     ):
 
         self.mode = mode
@@ -166,7 +166,10 @@ class DatasetMultiview(Dataset):
         )
         train_mask = ~val_mask
         mask = train_mask if mode == "train" else val_mask
-
+        
+        self.demo_dirs = [demo_dir for i, demo_dir in enumerate(demo_dirs) if mask[i]]
+        self.num_demos = len(self.demo_dirs)
+        
         self.actions = {}
         indices = []
         for i, demo_dir in enumerate(demo_dirs):
@@ -184,6 +187,7 @@ class DatasetMultiview(Dataset):
                 indices.append([demo_name, j])
 
         self.indices = indices
+        self.enable_multi_view = enable_multi_view
 
     def __len__(self):
         return len(self.indices) - 1
@@ -199,6 +203,8 @@ class DatasetMultiview(Dataset):
         """
         # randomly sample 2 cameras
         cam1, cam2 = random.choices(self.cam_keys, k=2)
+        if not self.enable_multi_view:
+            cam2 = cam1
 
         demo1, demo_idx1 = self.indices[idx]
         demo2, demo_idx2 = self.indices[idx + 1]
@@ -223,6 +229,29 @@ class DatasetMultiview(Dataset):
 
         return img1, img2, action, cam1, cam2
 
+    def get_seq(self, demo_idx, cam_idx):
+        cam = self.cam_keys[cam_idx]
+        imgs_path = os.path.join(
+            self.demo_dirs[demo_idx], "obs", f"{cam}_image"
+        )
+
+        imgs = glob(os.path.join(imgs_path, "*.jpg"))
+        imgs = sorted(imgs, key=lambda x: int(x.split('/')[-1].split('.')[0]))
+        
+        # corresponding action
+        action = np.load(os.path.join(self.demo_dirs[demo_idx], "actions.npy"))
+        
+        return torch.stack([read_image(img).float()/255. for img in imgs]), action, self.cams[cam].float(), cam, os.path.basename(self.demo_dirs[demo_idx])
+    
+    def get_frames(self, demo_idx, frame_idx):
+
+        imgs = [os.path.join(self.demo_dirs[demo_idx], "obs", f"{cam}_image", f"{frame_idx}.jpg") for cam in self.cam_keys]
+
+        action = np.load(os.path.join(self.demo_dirs[demo_idx], "actions.npy"))[frame_idx]
+        
+        cam = np.stack([self.cams[cam].float() for cam in self.cam_keys])
+        
+        return torch.stack([read_image(img).float()/255. for img in imgs]), action, cam, self.cam_keys, os.path.basename(self.demo_dirs[demo_idx])
 
 # class Datasethdf5Multiview(Dataset):
 #     def __init__(self,

@@ -18,6 +18,7 @@ parser.add_argument("--mask_ratio", type=float, default=0.5)
 parser.add_argument("--n_epoch_save", type=int, default=50)
 parser.add_argument("--wandb_project", type=str, default="SSL_final_project")
 parser.add_argument("--exp_name", type=str, default="baseline")
+parser.add_argument("--multi_view", action="store_true")
 
 parser.add_argument(
     "--mae_type", type=str, default="base", choices=["base", "large", "huge"]
@@ -30,10 +31,12 @@ action_dim = 7
 train_dataset = DatasetMultiview(
     dataset_root="/users/zli419/data/users/zli419/SSL/SSL_world_model",
     mode="train",
+    enable_multi_view=args.multi_view,
 )
 test_dataset = DatasetMultiview(
     dataset_root="/users/zli419/data/users/zli419/SSL/SSL_world_model",
     mode="val",
+    enable_multi_view=True
 )
 
 

@@ -72,6 +72,93 @@ class VWMTrainer(L.LightningModule):
         self.log("train/loss", loss, on_epoch=True, prog_bar=True, on_step=False)
         return loss
 
+    @torch.no_grad()
+    def test_single_view(self, seq, view, action, cam_name, demo_name, is_ar=False):
+        self.net.eval()
+        if is_ar:
+            input_img = seq[0].unsqueeze(0)
+            for i in range(len(seq)):
+                bs, _, img_size, __ = input_img.shape
+                imgs = torch.stack([input_img, input_img], dim=1)
+                plucker = (
+                    plucker_embedding(
+                        view[i:i+1], self.uv.repeat(bs, 1, 1), self.intr.repeat(bs, 1, 1)
+                    )
+                    .reshape(bs, img_size, img_size, 6)
+                    .permute(0, 3, 1, 2)
+                )
+                
+                loss, pred, mask = self.net(
+                    imgs, action[i:i+1], plucker, plucker, mask_ratio=self.mask_ratio
+                )
+                
+                input_img = self.net.mae.unpatchify(pred)
+                save_dir = os.path.join(self.save_dir, f"test/ar/{cam_name}/{demo_name}")
+                os.makedirs(save_dir, exist_ok=True)
+                pil_img = to_pil_image(input_img[0].detach().cpu())
+                pil_img.save(os.path.join(save_dir, f"{i+1}.jpg"))
+        else:
+            bs, _, img_size, __ = seq.shape
+            imgs = torch.stack([seq, seq], dim=1)
+            plucker = (
+                plucker_embedding(
+                    view, self.uv.repeat(bs, 1, 1), self.intr.repeat(bs, 1, 1)
+                )
+                .reshape(bs, img_size, img_size, 6)
+                .permute(0, 3, 1, 2)
+            )
+            
+            loss, pred, mask = self.net(
+                imgs, action, plucker, plucker, mask_ratio=self.mask_ratio
+            )
+            
+            pred = self.net.mae.unpatchify(pred)
+        
+            save_dir = os.path.join(self.save_dir, f"test/no_ar/{cam_name}/{demo_name}")
+            os.makedirs(save_dir, exist_ok=True)
+            for i in range(bs):
+                pil_img = to_pil_image(pred[i].detach().cpu())
+                pil_img.save(os.path.join(save_dir, f"{i+1}.jpg"))
+            
+            
+    @torch.no_grad()
+    def test_multi_view(self, imgs, view, action, cam_name, demo_name, frame_idx):
+        self.net.eval()
+        # [to_pil_image(imgs[i].detach().cpu()).save(f"tmp/{cam_name[i]}.jpg") for i in range(len(view))]
+        bs, _, img_size, __ = imgs.shape
+        init_image = imgs[0:1].expand(bs, -1, -1, -1)
+        init_cam = view[0:1].expand(bs, -1, -1)
+        action = action.expand(bs, -1)
+        
+        imgs = torch.stack([init_image, init_image], dim=1)
+        src_plucker = (
+            plucker_embedding(
+                init_cam, self.uv.repeat(bs, 1, 1), self.intr.repeat(bs, 1, 1)
+            )
+            .reshape(bs, img_size, img_size, 6)
+            .permute(0, 3, 1, 2)
+        )
+        tgt_plucker = (
+            plucker_embedding(
+                view, self.uv.repeat(bs, 1, 1), self.intr.repeat(bs, 1, 1)
+            )
+            .reshape(bs, img_size, img_size, 6)
+            .permute(0, 3, 1, 2)
+        )
+        loss, pred, mask = self.net(
+            imgs, action, src_plucker, tgt_plucker, mask_ratio=self.mask_ratio
+        )
+    
+    
+        pred = self.net.mae.unpatchify(pred)
+    
+        save_dir = os.path.join(self.save_dir, f"test/cross_view/{demo_name}/f{frame_idx}")
+        os.makedirs(save_dir, exist_ok=True)
+
+        for cam_i in range(bs):
+            pil_img = to_pil_image(pred[cam_i].detach().cpu())
+            pil_img.save(os.path.join(save_dir, f"{cam_name[cam_i]}.jpg"))
+            
     def validation_step(self, batch, batch_idx):
         img1, img2, action, src_view, tgt_view = batch
         bs, _, img_size, __ = img1.shape
